@@ -12,20 +12,20 @@ graph TD
     B --> C[Analysis Agents]
     B --> D[Teaching Agents]
     B --> E[Stockfish Integration]
-    
+
     subgraph "Analysis Agents"
     F[Tactical Analyzer]
     G[Strategic Evaluator]
     H[Pattern Recognition]
     I[Piece Coordination]
     end
-    
+
     subgraph "Teaching Agents"
     J[Move Explainer]
     K[Concept Teacher]
     L[Improvement Suggester]
     end
-    
+
     subgraph "Stockfish Integration"
     E --> M[Engine Pool]
     E --> N[Analysis Cache]
@@ -33,7 +33,7 @@ graph TD
     M --> P[Instance 2]
     M --> Q[Instance N]
     end
-    
+
     C --> E
     D --> C
 ```
@@ -48,11 +48,11 @@ from pydantic_ai import AIModel, Field, LLMFunction
 class TacticalAnalyzer(AIModel):
     """Agent responsible for tactical analysis"""
     position_fen: str = Field(..., description="FEN notation of the position")
-    
+
     @LLMFunction
     def find_tactical_motifs(self) -> list[dict]:
         """Identify tactical themes and combinations"""
-        
+
     @LLMFunction
     def calculate_critical_lines(self) -> list[dict]:
         """Calculate tactically critical variations"""
@@ -60,15 +60,15 @@ class TacticalAnalyzer(AIModel):
 class StrategicEvaluator(AIModel):
     """Agent responsible for strategic evaluation"""
     position_fen: str = Field(..., description="FEN notation of the position")
-    
+
     @LLMFunction
     def evaluate_pawn_structure(self) -> dict:
         """Analyze pawn structure and its implications"""
-        
+
     @LLMFunction
     def assess_piece_placement(self) -> dict:
         """Evaluate piece placement and coordination"""
-        
+
     @LLMFunction
     def identify_plans(self) -> list[dict]:
         """Identify strategic plans for both sides"""
@@ -76,11 +76,11 @@ class StrategicEvaluator(AIModel):
 class PatternRecognitionAgent(AIModel):
     """Agent for recognizing common patterns"""
     position_fen: str = Field(..., description="FEN notation of the position")
-    
+
     @LLMFunction
     def identify_similar_positions(self) -> list[dict]:
         """Find similar historical positions"""
-        
+
     @LLMFunction
     def suggest_typical_plans(self) -> list[dict]:
         """Suggest plans based on recognized patterns"""
@@ -88,11 +88,11 @@ class PatternRecognitionAgent(AIModel):
 class PieceCoordinationAgent(AIModel):
     """Agent for analyzing piece coordination"""
     position_fen: str = Field(..., description="FEN notation of the position")
-    
+
     @LLMFunction
     def analyze_piece_synergy(self) -> dict:
         """Analyze how pieces work together"""
-        
+
     @LLMFunction
     def find_improvement_spots(self) -> list[dict]:
         """Identify pieces that could be better placed"""
@@ -105,11 +105,11 @@ class MoveExplainer(AIModel):
     """Agent for explaining moves"""
     move_uci: str
     position_analysis: dict = Field(..., description="Combined analysis from other agents")
-    
+
     @LLMFunction
     def explain_move_reasoning(self) -> str:
         """Generate comprehensive move explanation"""
-        
+
     @LLMFunction
     def suggest_alternatives(self) -> list[dict]:
         """Suggest and explain alternative moves"""
@@ -117,11 +117,11 @@ class MoveExplainer(AIModel):
 class ConceptTeacher(AIModel):
     """Agent for teaching chess concepts"""
     position_analysis: dict
-    
+
     @LLMFunction
     def extract_teaching_points(self) -> list[dict]:
         """Extract key concepts for teaching"""
-        
+
     @LLMFunction
     def generate_exercises(self) -> list[dict]:
         """Generate related exercises for practice"""
@@ -129,11 +129,11 @@ class ConceptTeacher(AIModel):
 class ImprovementSuggester(AIModel):
     """Agent for suggesting improvements"""
     game_analysis: dict
-    
+
     @LLMFunction
     def suggest_improvements(self) -> list[dict]:
         """Suggest concrete improvements"""
-        
+
     @LLMFunction
     def create_study_plan(self) -> dict:
         """Create personalized study plan"""
@@ -143,9 +143,17 @@ class ImprovementSuggester(AIModel):
 
 ### 4.1 Core Components
 
+We leverage two powerful Python libraries for chess engine integration:
+
+1. **python-chess**: A comprehensive chess library for move generation, piece placement, and board representation
+2. **stockfish**: A Python wrapper for the Stockfish chess engine
+
 ```python
 from pydantic_ai import AIModel, Field, LLMFunction
 from typing import List, Dict, Optional
+import chess
+import chess.engine
+from stockfish import Stockfish
 
 class StockfishConfig(AIModel):
     """Configuration for Stockfish engine"""
@@ -153,11 +161,12 @@ class StockfishConfig(AIModel):
     threads: int = Field(4, description="Number of CPU threads")
     hash_size: int = Field(128, description="Hash table size in MB")
     multi_pv: int = Field(3, description="Number of principal variations")
+    skill_level: int = Field(20, description="Stockfish skill level (0-20)")
 
 class EngineAnalysis(AIModel):
     """Structured engine analysis results"""
     evaluation: float
-    best_moves: List[str]
+    best_move: str
     principal_variations: List[Dict]
     depth_reached: int
     nodes_searched: int
@@ -167,22 +176,55 @@ class StockfishManager:
     """Manages Stockfish engine instances and analysis requests"""
     def __init__(self, config: StockfishConfig):
         self.config = config
-        self.engine_pool = self._initialize_engine_pool()
+        self.engines = {}
         self.analysis_cache = {}
-        self.position_queue = asyncio.Queue()
 
-    async def get_analysis(self, fen: str, depth: Optional[int] = None) -> EngineAnalysis:
+    def initialize_engine(self, engine_id: int = 0) -> Stockfish:
+        """Initialize a Stockfish engine instance"""
+        engine = Stockfish()
+        engine.update_engine_parameters({
+            "Threads": self.config.threads,
+            "Hash": self.config.hash_size,
+            "MultiPV": self.config.multi_pv,
+            "Skill Level": self.config.skill_level
+        })
+        self.engines[engine_id] = engine
+        return engine
+
+    def get_analysis(self, fen: str, depth: Optional[int] = None) -> EngineAnalysis:
         """Get engine analysis for a position"""
-        if fen in self.analysis_cache:
-            return self.analysis_cache[fen]
-            
-        engine = await self._get_available_engine()
-        try:
-            analysis = await self._analyze_position(engine, fen, depth)
-            self.analysis_cache[fen] = analysis
-            return analysis
-        finally:
-            await self._release_engine(engine)
+        # Check cache
+        cache_key = f"{fen}_{depth or self.config.depth}"
+        if cache_key in self.analysis_cache:
+            return self.analysis_cache[cache_key]
+
+        # Get or create engine
+        engine = self.engines.get(0)
+        if not engine:
+            engine = self.initialize_engine()
+
+        # Set position and analyze
+        engine.set_fen_position(fen)
+        engine.set_depth(depth or self.config.depth)
+
+        # Get evaluation and best move
+        evaluation = engine.get_evaluation()
+        best_move = engine.get_best_move()
+        top_moves = engine.get_top_moves(self.config.multi_pv)
+
+        # Create analysis result
+        analysis = EngineAnalysis(
+            evaluation=evaluation["value"] / 100.0 if evaluation["type"] == "cp" else float("inf") if evaluation["type"] == "mate" else 0.0,
+            best_move=best_move,
+            principal_variations=[{"move": move["Move"], "centipawn": move["Centipawn"], "mate": move.get("Mate")} for move in top_moves],
+            depth_reached=depth or self.config.depth,
+            nodes_searched=0,  # Not directly available from stockfish module
+            time_spent_ms=0    # Not directly available from stockfish module
+        )
+
+        # Cache the result
+        self.analysis_cache[cache_key] = analysis
+        return analysis
 ```
 
 ### 4.2 Analysis Pipeline
@@ -191,57 +233,82 @@ class StockfishManager:
 sequenceDiagram
     participant AA as Analysis Agent
     participant SM as Stockfish Manager
-    participant EP as Engine Pool
+    participant SF as Stockfish Engine
     participant AC as Analysis Cache
-    
+
     AA->>SM: Request Analysis
     SM->>AC: Check Cache
     alt Position in cache
         AC-->>SM: Return cached analysis
         SM-->>AA: Return analysis
     else Position not in cache
-        SM->>EP: Get available engine
-        EP-->>SM: Return engine instance
-        SM->>EP: Run analysis
-        EP-->>SM: Return results
+        SM->>SF: Set position
+        SM->>SF: Set analysis parameters
+        SM->>SF: Get evaluation
+        SF-->>SM: Return evaluation
+        SM->>SF: Get best move
+        SF-->>SM: Return best move
+        SM->>SF: Get top moves
+        SF-->>SM: Return top moves
         SM->>AC: Cache results
         SM-->>AA: Return analysis
     end
 ```
 
-### 4.3 Parallel Analysis Implementation
+### 4.3 Advanced Analysis with python-chess
 
 ```python
-class AnalysisPipeline:
-    """Coordinates parallel analysis requests"""
-    def __init__(self, stockfish_manager: StockfishManager):
-        self.stockfish = stockfish_manager
-        
-    async def run_parallel_analysis(
-        self,
-        position_fen: str,
-        analysis_types: List[str]
-    ) -> Dict:
-        """Run multiple analysis tasks in parallel"""
-        tasks = []
-        
-        if "tactical" in analysis_types:
-            analyzer = TacticalAnalyzer(
-                position_fen=position_fen,
-                stockfish=self.stockfish
+import chess
+import chess.engine
+from pathlib import Path
+
+class AdvancedAnalysis:
+    """Provides advanced analysis using python-chess"""
+    def __init__(self, stockfish_path: Optional[str] = None):
+        self.stockfish_path = stockfish_path or "stockfish"
+
+    def analyze_position(self, fen: str, depth: int = 20, multipv: int = 3) -> Dict:
+        """Analyze a position using python-chess and Stockfish"""
+        board = chess.Board(fen)
+
+        # Start Stockfish process
+        transport, engine = chess.engine.popen_uci(self.stockfish_path)
+
+        try:
+            # Set up analysis with multiple variations
+            result = engine.analyse(
+                board,
+                chess.engine.Limit(depth=depth),
+                multipv=multipv
             )
-            tasks.append(analyzer.find_tactical_motifs())
-            
-        if "strategic" in analysis_types:
-            evaluator = StrategicEvaluator(
-                position_fen=position_fen,
-                stockfish=self.stockfish
-            )
-            tasks.append(evaluator.evaluate_position_features())
-            
-        # Run all analysis tasks concurrently
-        results = await asyncio.gather(*tasks)
-        return self._combine_analysis_results(results)
+
+            # Process and return results
+            analysis = {
+                "best_move": result[0]["pv"][0].uci() if result[0].get("pv") else None,
+                "score": self._parse_score(result[0]["score"]),
+                "variations": [
+                    {
+                        "moves": [move.uci() for move in pv.get("pv", [])],
+                        "score": self._parse_score(pv["score"]),
+                        "depth": pv.get("depth", 0)
+                    }
+                    for pv in result
+                ]
+            }
+
+            return analysis
+
+        finally:
+            # Clean up resources
+            engine.quit()
+            transport.close()
+
+    def _parse_score(self, score) -> Dict:
+        """Parse a chess.engine.Score object"""
+        if score.is_mate():
+            return {"type": "mate", "moves": score.mate()}
+        else:
+            return {"type": "cp", "value": score.score()}
 ```
 
 ## 5. LangGraph Implementation
@@ -252,23 +319,23 @@ class AnalysisPipeline:
 stateDiagram-v2
     [*] --> InitialPosition
     InitialPosition --> ParallelAnalysis
-    
+
     state ParallelAnalysis {
         [*] --> TacticalAnalysis
         [*] --> StrategicAnalysis
         [*] --> PatternRecognition
         [*] --> PieceCoordination
     }
-    
+
     ParallelAnalysis --> CombinedAnalysis
     CombinedAnalysis --> TeachingPhase
-    
+
     state TeachingPhase {
         [*] --> MoveExplanation
         [*] --> ConceptTeaching
         [*] --> ImprovementSuggestions
     }
-    
+
     TeachingPhase --> FeedbackCollection
     FeedbackCollection --> [*]
 ```
@@ -287,7 +354,7 @@ class ChessTutorGraph(Graph):
             'teacher': ConceptTeacher(),
             'improver': ImprovementSuggester()
         }
-        
+
     async def run_analysis(self, position_fen: str) -> dict:
         # Parallel analysis execution
         analysis_tasks = [
@@ -364,13 +431,16 @@ chess_tutor/
 │       └── improver.py
 ├── core/
 │   ├── engine/
-│   │   ├── stockfish.py
-│   │   ├── manager.py
-│   │   └── analysis.py
+│   │   ├── config.py         # Engine configuration
+│   │   ├── stockfish_api.py  # Stockfish Python package integration
+│   │   ├── chess_api.py      # Python-chess integration
+│   │   ├── manager.py        # StockfishManager implementation
+│   │   └── analysis.py       # Analysis pipeline
 │   └── orchestrator.py
 ├── utils/
 │   ├── chess_utils.py
 │   └── analysis_utils.py
+├── requirements.txt          # Including stockfish and python-chess
 └── main.py
 ```
 
@@ -402,36 +472,36 @@ chess_tutor/
 #### TASK-1.1: Stockfish Manager Setup
 Priority: High
 Dependencies: None
-Description: Implement the core StockfishManager class for engine management
+Description: Implement the core StockfishManager class for engine management using stockfish and python-chess libraries
 
 Subtasks:
-1. Install and validate Stockfish binary
-   - Set up Stockfish installation script
-   - Add version validation
-   - Create binary path configuration
+1. Install and configure Stockfish integration
+   - Set up stockfish Python package
+   - Set up python-chess package
+   - Create configuration interface
 
-2. Implement engine pool initialization
-   - Create engine instance wrapper class
-   - Implement thread-safe engine pool
-   - Add configuration validation
-   - Test pool creation/destruction
+2. Implement StockfishManager class
+   - Create engine instance management
+   - Implement position analysis methods
+   - Add configuration handling
+   - Test basic functionality
 
-3. Create engine communication layer
-   - Implement UCI protocol wrapper
-   - Add command queuing system
-   - Create response parser
-   - Add timeout handling
+3. Create advanced analysis with python-chess
+   - Implement detailed position analysis
+   - Add multi-PV support
+   - Create structured result format
+   - Add error handling
 
 4. Implement analysis cache
    - Design cache data structure
-   - Add cache invalidation strategy
-   - Implement thread-safe access
+   - Add cache key generation
+   - Implement cache lookup and storage
    - Add cache size limits
 
 Acceptance Criteria:
-- Stockfish binary is properly detected and validated
-- Multiple engine instances can run concurrently
-- Engine pool properly manages resources
+- Stockfish integration works correctly with both libraries
+- Position analysis provides accurate results
+- Advanced analysis features are available when needed
 - Cache effectively stores and retrieves analysis results
 
 #### TASK-1.2: Analysis Pipeline Implementation
@@ -440,27 +510,27 @@ Dependencies: TASK-1.1
 Description: Create the analysis pipeline for processing positions
 
 Subtasks:
-1. Implement position analysis queue
-   - Create queue data structure
-   - Add priority handling
-   - Implement cancellation support
+1. Implement batch position analysis
+   - Create batch processing interface
+   - Add position queue management
+   - Implement result collection
 
 2. Create analysis result processor
-   - Design result data structure
-   - Implement PV parsing
-   - Add evaluation normalization
+   - Design standardized result format
+   - Implement evaluation normalization
+   - Add move annotation
    - Create error handling
 
 3. Add parallel analysis support
-   - Implement task distribution
+   - Implement concurrent position analysis
    - Add result aggregation
-   - Create load balancing
-   - Test concurrent analysis
+   - Create progress tracking
+   - Test performance scaling
 
 Acceptance Criteria:
-- Positions can be queued for analysis
-- Results are properly parsed and structured
-- Multiple positions can be analyzed in parallel
+- Multiple positions can be analyzed efficiently
+- Results are properly structured and normalized
+- Analysis can run concurrently for better performance
 - System handles errors gracefully
 
 ### EPIC-2: Analysis Agents
